@@ -12,6 +12,7 @@
     "url": "https://github.com/valtech-sd/amqp-cacoon.git"
   },
   "scripts": {
+    "prepare": "rimraf ./build && tsc",
     "build": "rimraf ./build && tsc",
     "test": "rimraf ./build && tsc && mocha --exit -r ts-node/register ./tests/**/*.test.ts"
   },
