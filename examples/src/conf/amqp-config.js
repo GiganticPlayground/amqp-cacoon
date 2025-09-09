@@ -1,8 +1,8 @@
-const secrets = require('./secrets.json');
-const fs = require('fs');
+const secrets = require("./secrets.json");
+const fs = require("fs");
 
 // Enter either "amqp" or "amqps"
-const protocol = 'amqps';
+const protocol = "amqp";
 
 const amqpConfig = {
   // Protocol should be "amqps" or "amqp"
@@ -11,9 +11,9 @@ const amqpConfig = {
   username: secrets.amqpUsername,
   password: secrets.amqpPassword,
   // Host
-  host: 'localhost',
+  host: "localhost",
   // Port AMQPS=5671, AMQP=5672
-  port: protocol === 'amqps' ? 5671 : 5672,
+  port: protocol === "amqps" ? 5671 : 5672,
   // AMQP Options which should conform to <AmqpConnectionManagerOptions>
   amqp_opts: {
     // Pass options to node amqp connection manager (a wrapper around AMQPLIB)
@@ -30,18 +30,19 @@ const amqpConfig = {
       // 'port' to the corresponding AMQPS values also in this configuration!
       // See https://www.squaremobius.net/amqp.node/ssl.html for more details.
       ca:
-        protocol === 'amqps'
+        protocol === "amqps"
           ? [
               fs.readFileSync(
-                __dirname + '/' + secrets.amqpCACertName || 'ca_certificate.pem'
+                __dirname + "/" + secrets.amqpCACertName ||
+                  "ca_certificate.pem",
               ),
             ]
           : null,
     },
   },
   // Queues + Exchanges that we'll be using for the examples
-  exampleQueue: 'example-queue',
-  exampleExchange: 'example-exchange',
+  exampleQueue: "example-queue",
+  exampleExchange: "example-exchange",
 };
 
 module.exports = amqpConfig;

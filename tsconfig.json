@@ -12,14 +12,11 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "sourceMap": true,
+    "sourceMap": true
   },
   "ts-node": {
-    "transpileOnly": true,
+    "transpileOnly": true
   },
-  "exclude": [
-    "examples",
-    "build",
-    "tests",
-  ]
+  "include": ["src/**/*.ts", "global.d.ts"],
+  "exclude": ["examples", "build", "tests"]
 }
