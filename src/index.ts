@@ -2,16 +2,16 @@ import amqp, {
   ChannelWrapper,
   AmqpConnectionManager,
   AmqpConnectionManagerOptions,
-} from 'amqp-connection-manager';
+} from "amqp-connection-manager";
 import {
   ConsumeMessage,
   Channel,
   ConfirmChannel,
   Options,
   Connection,
-} from 'amqplib';
-import { ILogger } from './types';
-import MessageBatchingManager from './helpers/message_batching_manager';
+} from "amqplib";
+import { ILogger } from "./types";
+import MessageBatchingManager from "./helpers/message_batching_manager";
 
 type ConnectCallback = (channel: ConfirmChannel) => Promise<any>;
 type BrokerConnectCallback = (connection: Connection, url: string) => void;
@@ -72,6 +72,8 @@ export interface IAmqpCacoonConfig {
   // maxWaitForDrainMs?: number; // How long to wait for a drain event if RabbitMq fills up. Zero to wait forever. Defaults to 60000 ms (1 min)
 }
 
+globalThis.amqpCacoonConnections = [];
+
 /**
  * AmqpCacoon
  * This module is used to communicate using the RabbitMQ amqp protocol
@@ -92,6 +94,8 @@ class AmqpCacoon {
   private onChannelConnect: ConnectCallback | null;
   private onBrokerConnect: Function | null;
   private onBrokerDisconnect: Function | null;
+  private isShuttingDownPublisher: boolean = false;
+  private isShuttingDownConsumer: boolean = false;
 
   /**
    * constructor
@@ -112,6 +116,9 @@ class AmqpCacoon {
     this.onChannelConnect = config.onChannelConnect || null;
     this.onBrokerConnect = config.onBrokerConnect || null;
     this.onBrokerDisconnect = config.onBrokerDisconnect || null;
+
+    // Add this instance to the global list of connections
+    globalThis.amqpCacoonConnections.push(this);
   }
 
   /**
@@ -122,22 +129,22 @@ class AmqpCacoon {
   private static getFullHostName(config: IAmqpCacoonConfig) {
     var fullHostNameString =
       config.protocol +
-      '://' +
+      "://" +
       config.username +
-      ':' +
+      ":" +
       config.password +
-      '@' +
+      "@" +
       config.host +
-      (config.port ? `:${config.port}` : '') +
-      (config.vhost ? `/${config.vhost}` : '');
+      (config.port ? `:${config.port}` : "") +
+      (config.vhost ? `/${config.vhost}` : "");
 
     return fullHostNameString;
   }
 
   private injectConnectionEvents(connection: AmqpConnectionManager) {
     // Subscribe to onConnect / onDisconnection functions for debugging
-    connection.on('connect', this.handleBrokerConnect.bind(this));
-    connection.on('disconnect', this.handleBrokerDisconnect.bind(this));
+    connection.on("connect", this.handleBrokerConnect.bind(this));
+    connection.on("disconnect", this.handleBrokerDisconnect.bind(this));
   }
 
   /**
@@ -172,7 +179,7 @@ class AmqpCacoon {
         },
       });
     } catch (e) {
-      if (this.logger) this.logger.error('AMQPCacoon.connect: Error: ', e);
+      if (this.logger) this.logger.error("AMQPCacoon.connect: Error: ", e);
       throw e;
     }
     // Return the channel
@@ -212,7 +219,7 @@ class AmqpCacoon {
       });
     } catch (e) {
       if (this.logger)
-        this.logger.error('AMQPCacoon.getConsumerChannel: Error: ', e);
+        this.logger.error("AMQPCacoon.getConsumerChannel: Error: ", e);
       throw e;
     }
     // Return the channel
@@ -232,9 +239,9 @@ class AmqpCacoon {
     queue: string,
     consumerHandler: (
       channel: ChannelWrapper,
-      msg: ConsumeMessage | null
+      msg: ConsumeMessage | null,
     ) => Promise<void>,
-    options?: ConsumerOptions
+    options?: ConsumerOptions,
   ) {
     try {
       // Get consumer channel
@@ -245,12 +252,12 @@ class AmqpCacoon {
         return channel.consume(
           queue,
           consumerHandler.bind(this, channelWrapper),
-          options
+          options,
         );
       });
     } catch (e) {
       if (this.logger)
-        this.logger.error('AMQPCacoon.registerConsumerPrivate: Error: ', e);
+        this.logger.error("AMQPCacoon.registerConsumerPrivate: Error: ", e);
       throw e;
     }
   }
@@ -268,15 +275,18 @@ class AmqpCacoon {
   async registerConsumer(
     queue: string,
     handler: (channel: ChannelWrapper, msg: ConsumeMessage) => Promise<void>,
-    options?: ConsumerOptions
+    options?: ConsumerOptions,
   ) {
+    if (this.isShuttingDownConsumer) {
+      throw new Error("AMQPCacoon.registerConsumerBatch: Shutting down");
+    }
     return this.registerConsumerPrivate(
       queue,
       async (channel: ChannelWrapper, msg: ConsumeMessage | null) => {
         if (!msg) return; // We know this will always be true but typescript requires this
         await handler(channel, msg);
       },
-      options
+      options,
     );
   }
 
@@ -296,10 +306,13 @@ class AmqpCacoon {
     queue: string,
     handler: (
       channel: ChannelWrapper,
-      msg: ConsumeBatchMessages
+      msg: ConsumeBatchMessages,
     ) => Promise<void>,
-    options?: ConsumerBatchOptions
+    options?: ConsumerBatchOptions,
   ) {
+    if (this.isShuttingDownConsumer) {
+      throw new Error("AMQPCacoon.registerConsumerBatch: Shutting down");
+    }
     // Set some default options
     if (!options?.batching) {
       options = Object.assign(
@@ -310,7 +323,7 @@ class AmqpCacoon {
             maxSizeBytes: DEFAULT_MAX_FILES_SIZE_BYTES,
           },
         },
-        options
+        options,
       );
     }
 
@@ -332,7 +345,7 @@ class AmqpCacoon {
         // Handle message batching
         messageBatchingHandler.handleMessageBuffering(channel, msg, handler);
       },
-      options
+      options,
     );
   }
 
@@ -350,8 +363,11 @@ class AmqpCacoon {
     exchange: any,
     routingKey: any,
     msgBuffer: any,
-    options?: Options.Publish
+    options?: Options.Publish,
   ) {
+    if (this.isShuttingDownPublisher) {
+      throw new Error("AMQPCacoon.publish: Shutting down");
+    }
     try {
       // Actually returns a wrapper
       const channel = await this.getPublishChannel(); // Sets up the publisher channel
@@ -362,7 +378,7 @@ class AmqpCacoon {
       await channel.publish(exchange, routingKey, msgBuffer, options);
       return;
     } catch (e) {
-      if (this.logger) this.logger.error('AMQPCacoon.publish: Error: ', e);
+      if (this.logger) this.logger.error("AMQPCacoon.publish: Error: ", e);
       throw e;
     }
   }
@@ -379,6 +395,108 @@ class AmqpCacoon {
     }
   }
 
+  async cancelPublisherChanel() {
+    this.logger?.info("AMQPCacoon.cancelPublisherChanel: START");
+    this.isShuttingDownPublisher = true;
+    try {
+      const publishChannel = this.pubChannelWrapper;
+      if (!publishChannel) {
+        this.logger?.info("AMQPCacoon.cancelPublisherChanel: No channel");
+        this.logger?.info("AMQPCacoon.cancelPublisherChanel: END");
+        return;
+      }
+      this.logger?.info(
+        "AMQPCacoon.cancelPublisherChanel: Cancelling publishers",
+      );
+      await publishChannel.cancelAll(); // Shouldn't do anything but just in case someone was silly with use of publish channel
+      this.logger?.info(
+        "AMQPCacoon.cancelPublisherChanel: Cancelled publishers",
+      );
+      // Wait for all messages to be sent
+      this.logger?.info(
+        "AMQPCacoon.cancelPublisherChanel: Waiting for all messages to be sent",
+      );
+      let queueLength = publishChannel.queueLength();
+      while (queueLength > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        queueLength = publishChannel.queueLength();
+      }
+      this.logger?.info("AMQPCacoon.cancelPublisherChanel: All messages sent");
+    } catch (error) {
+      this.logger?.error("AMQPCacoon.cancelPublisherChanel: Error", error);
+    }
+
+    this.logger?.info("AMQPCacoon.cancelPublisherChanel: END");
+  }
+
+  async cancelConsumerChanel() {
+    this.logger?.info("AMQPCacoon.cancelConsumerChanel: START");
+    this.isShuttingDownConsumer = true;
+    try {
+      const consumerChannel = this.subChannelWrapper;
+      if (!consumerChannel) {
+        this.logger?.info("AMQPCacoon.cancelConsumerChanel: No channel");
+        this.logger?.info("AMQPCacoon.cancelConsumerChanel: END");
+        return;
+      }
+      this.logger?.info(
+        "AMQPCacoon.cancelConsumerChanel: Cancelling consumers",
+      );
+      await consumerChannel.cancelAll();
+      this.logger?.info("AMQPCacoon.cancelConsumerChanel: Cancelled consumers");
+    } catch (error) {
+      this.logger?.error("AMQPCacoon.cancelConsumerChanel: Error", error);
+    }
+    this.logger?.info("AMQPCacoon.cancelConsumerChanel: END");
+  }
+
+  async gracefullShutdown(options: {
+    prePublishCallback: () => Promise<any>;
+    preCloseCallback: () => Promise<any>;
+  }) {
+    await this.cancelConsumerChanel();
+
+    if (options.prePublishCallback) await options.prePublishCallback();
+
+    await this.cancelPublisherChanel();
+
+    if (options.preCloseCallback) await options.preCloseCallback();
+
+    await this.close();
+  }
+
+  static async gracefullShutdownAll(options: {
+    prePublishCallback: () => Promise<any>;
+    preCloseCallback: () => Promise<any>;
+  }) {
+    const consumerCloseProms = [];
+    globalThis.amqpCacoonConnections?.[0]?.logger?.info(
+      "AMQPCacoon.gracefullShutdownAll: START",
+    );
+    for (let conn of globalThis.amqpCacoonConnections) {
+      consumerCloseProms.push(conn.cancelConsumerChanel());
+    }
+    await Promise.all(consumerCloseProms);
+
+    // Cancel publishers
+    if (options.prePublishCallback) await options.prePublishCallback();
+    const publisherCloseProms = [];
+    for (let conn of globalThis.amqpCacoonConnections) {
+      publisherCloseProms.push(conn.cancelPublisherChanel());
+    }
+    await Promise.all(publisherCloseProms);
+
+    // Close connctions
+    if (options.preCloseCallback) await options.preCloseCallback();
+    const closeProms = [];
+    for (let conn of globalThis.amqpCacoonConnections) {
+      closeProms.push(conn.close());
+    }
+    Promise.all(closeProms);
+    globalThis.amqpCacoonConnections?.[0]?.logger?.info(
+      "AMQPCacoon.gracefullShutdownAll: END",
+    );
+  }
   /**
    * closeConsumerChannel
    * Close consume channel

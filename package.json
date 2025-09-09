@@ -17,13 +17,12 @@
     "test": "rimraf ./build && tsc && mocha --exit -r ts-node/register ./tests/**/*.test.ts"
   },
   "dependencies": {
-    "amqp-connection-manager": "~3.5.0",
+    "amqp-connection-manager": "~4.1.14",
     "amqplib": "^0.8.0",
     "lodash": "^4.17.21"
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/amqp-connection-manager": "^2.0.12",
     "@types/amqplib": "^0.8.2",
     "@types/chai": "^4.2.21",
     "@types/lodash": "^4.14.172",

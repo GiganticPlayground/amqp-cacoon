@@ -24,16 +24,16 @@
  */
 
 // Bring in Core Node Dependencies
-const util = require('util');
+const util = require("util");
 
 // Bring in Package Dependencies
-const { default: AmqpCacoon } = require('amqp-cacoon');
+const { default: AmqpCacoon } = require("amqp-cacoon");
 
 // Bring in other Application Specific dependencies
-const logger = require('./custom_logger');
+const logger = require("./custom_logger");
 
 // Bring in our AMQP Broker configuration
-const amqpConfig = require('./conf/amqp-config');
+const amqpConfig = require("./conf/amqp-config");
 
 // Since the AMQP Input requires an AMQP Cacoon object, let's start by creating that.
 // AMQP Cacoon is a library that makes it easy to connect to RabbitMQ.
@@ -50,7 +50,7 @@ let amqpCacoon = new AmqpCacoon({
   onBrokerConnect: async (connection, url) => {
     // This is an example "Connect" event fired off by AMQP Connection Manager
     logger.debug(
-      `Connected to broker: "${amqpConfig.host}" on port ${amqpConfig.port} over "${amqpConfig.protocol}".`
+      `Connected to broker: "${amqpConfig.host}" on port ${amqpConfig.port} over "${amqpConfig.protocol}".`,
     );
   },
   onBrokerDisconnect: async (err) => {
@@ -72,7 +72,7 @@ let amqpCacoon = new AmqpCacoon({
         durable: false,
       });
       // Make sure we have our example exchange
-      await channel.assertExchange(amqpConfig.exampleExchange, 'direct', {
+      await channel.assertExchange(amqpConfig.exampleExchange, "direct", {
         autoDelete: true,
         durable: false,
       });
@@ -80,7 +80,7 @@ let amqpCacoon = new AmqpCacoon({
       await channel.bindQueue(
         amqpConfig.exampleQueue,
         amqpConfig.exampleExchange,
-        '' // Empty routing key to match anything published without one! (Messages published into this
+        "", // Empty routing key to match anything published without one! (Messages published into this
         // exchange without a routing key WILL be sent to the bound queue.
       );
     } catch (ex) {
@@ -102,7 +102,7 @@ async function main() {
   const messageAsBuffer = Buffer.from(`Hi. Today is ${new Date().toString()}`);
 
   // Publish
-  await amqpCacoon.publish(amqpConfig.exampleExchange, '', messageAsBuffer);
+  await amqpCacoon.publish(amqpConfig.exampleExchange, "", messageAsBuffer);
 
   // Close the connection
   amqpCacoon.close();
@@ -115,10 +115,10 @@ main()
   .then(() => {
     // Ok, we should have a consumer ready!
     console.info(
-      `You should see a message in the Queue "${amqpConfig.exampleQueue}" on your AMQP host.`
+      `You should see a message in the Queue "${amqpConfig.exampleQueue}" on your AMQP host.`,
     );
     logger.info(
-      `An easy way to see messages is to open the RabbitMQ console. Under QUEUES, click into "${amqpConfig.exampleQueue}" and notice there is a GET MESSAGES section. Click that to pull out any messages in the queue.`
+      `An easy way to see messages is to open the RabbitMQ console. Under QUEUES, click into "${amqpConfig.exampleQueue}" and notice there is a GET MESSAGES section. Click that to pull out any messages in the queue.`,
     );
   })
   .catch((e) => {
