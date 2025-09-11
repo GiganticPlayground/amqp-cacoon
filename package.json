@@ -1,6 +1,6 @@
 {
   "name": "amqp-cacoon",
-  "version": "0.1.0",
+  "version": "3.3.1",
   "description": "AmqpCacoon is an abstraction around amqplib that provides a simple interface with flow control included out of the box",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "amqp-connection-manager": "~4.1.14",
-    "amqplib": "^0.8.0",
     "lodash": "^4.17.21"
   },
   "license": "MIT",

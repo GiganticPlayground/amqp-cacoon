@@ -68,12 +68,12 @@ let amqpCacoon = new AmqpCacoon({
 
       // Make sure we have our example queue
       await channel.assertQueue(amqpConfig.exampleQueue, {
-        autoDelete: true,
+        autoDelete: false,
         durable: false,
       });
       // Make sure we have our example exchange
       await channel.assertExchange(amqpConfig.exampleExchange, "direct", {
-        autoDelete: true,
+        autoDelete: false,
         durable: false,
       });
       // Bind the new Exchange and Queue together
@@ -98,11 +98,15 @@ async function main() {
   // Connects and sets up a subscription channelWrapper
   await amqpCacoon.getPublishChannel();
 
-  // Create the message as a Buffer (since that's required by the underlying libraries)
-  const messageAsBuffer = Buffer.from(`Hi. Today is ${new Date().toString()}`);
-
   // Publish
-  await amqpCacoon.publish(amqpConfig.exampleExchange, "", messageAsBuffer);
+  // Publish 1 to argument 1 count if an argument is passed in
+  for (let i = 0; i < (process.argv[2] || 1); i++) {
+    // Create the message as a Buffer (since that's required by the underlying libraries)
+    const messageAsBuffer = Buffer.from(
+      `Hi. Today is ${new Date().toString()} - ${i}`,
+    );
+    await amqpCacoon.publish(amqpConfig.exampleExchange, "", messageAsBuffer);
+  }
 
   // Close the connection
   amqpCacoon.close();

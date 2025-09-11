@@ -96,6 +96,14 @@ class AmqpCacoon {
   private onBrokerDisconnect: Function | null;
   private isShuttingDownPublisher: boolean = false;
   private isShuttingDownConsumer: boolean = false;
+  private hasCanceledConsumer: boolean = false;
+  private shouldSoftwareBlockCanceledConsumber: boolean = false;
+  private messageStatistics = {
+    messagesPublished: 0,
+    messagesReceived: 0,
+    messagesProcessed: 0,
+    messagesBeingProcessed: 0,
+  };
 
   /**
    * constructor
@@ -284,7 +292,26 @@ class AmqpCacoon {
       queue,
       async (channel: ChannelWrapper, msg: ConsumeMessage | null) => {
         if (!msg) return; // We know this will always be true but typescript requires this
-        await handler(channel, msg);
+        if (
+          this.hasCanceledConsumer &&
+          this.shouldSoftwareBlockCanceledConsumber
+        ) {
+          this.logger?.info(
+            "AMQPCacoon.registerConsumer: Consumer has been canceled but we received a message - ignoring message - May be requeued",
+          );
+          return;
+        }
+        try {
+          this.messageStatistics.messagesReceived++;
+          this.messageStatistics.messagesBeingProcessed++;
+          await handler(channel, msg);
+          this.messageStatistics.messagesProcessed++;
+          this.messageStatistics.messagesBeingProcessed--;
+        } catch (e) {
+          this.messageStatistics.messagesProcessed++;
+          this.messageStatistics.messagesBeingProcessed--;
+          throw e;
+        }
       },
       options,
     );
@@ -342,8 +369,28 @@ class AmqpCacoon {
       async (channel: ChannelWrapper, msg: ConsumeMessage | null) => {
         if (!msg) return; // We know this will always be true but typescript requires this
 
-        // Handle message batching
-        messageBatchingHandler.handleMessageBuffering(channel, msg, handler);
+        if (
+          this.hasCanceledConsumer &&
+          this.shouldSoftwareBlockCanceledConsumber
+        ) {
+          this.logger?.info(
+            "AMQPCacoon.registerConsumer: Consumer has been canceled but we received a message - ignoring message - May be requeued",
+          );
+          return;
+        }
+
+        try {
+          this.messageStatistics.messagesReceived++;
+          this.messageStatistics.messagesBeingProcessed++;
+          // Handle message batching
+          messageBatchingHandler.handleMessageBuffering(channel, msg, handler);
+          this.messageStatistics.messagesProcessed++;
+          this.messageStatistics.messagesBeingProcessed--;
+        } catch (e) {
+          this.messageStatistics.messagesProcessed++;
+          this.messageStatistics.messagesBeingProcessed--;
+          throw e;
+        }
       },
       options,
     );
@@ -372,6 +419,7 @@ class AmqpCacoon {
       // Actually returns a wrapper
       const channel = await this.getPublishChannel(); // Sets up the publisher channel
 
+      this.messageStatistics.messagesPublished++;
       // There's currently a reported bug in node-amqp-connection-manager saying the lib does
       // not handle drain events properly... requires research.
       // See https://github.com/valtech-sd/amqp-cacoon/issues/20
@@ -429,9 +477,14 @@ class AmqpCacoon {
     this.logger?.info("AMQPCacoon.cancelPublisherChanel: END");
   }
 
-  async cancelConsumerChanel() {
+  async cancelConsumerChanel(
+    options: { timeoutWaitingForMessageProcessingMs?: number } = {
+      timeoutWaitingForMessageProcessingMs: 10000,
+    },
+  ) {
     this.logger?.info("AMQPCacoon.cancelConsumerChanel: START");
     this.isShuttingDownConsumer = true;
+    this.hasCanceledConsumer = true;
     try {
       const consumerChannel = this.subChannelWrapper;
       if (!consumerChannel) {
@@ -441,9 +494,27 @@ class AmqpCacoon {
       }
       this.logger?.info(
         "AMQPCacoon.cancelConsumerChanel: Cancelling consumers",
+        { messageStatistics: this.messageStatistics },
       );
       await consumerChannel.cancelAll();
-      this.logger?.info("AMQPCacoon.cancelConsumerChanel: Cancelled consumers");
+      // Wait for all messages to be processed
+      const startWaitTimeMs = Date.now();
+      while (
+        this.messageStatistics.messagesBeingProcessed > 0 &&
+        Date.now() <
+          startWaitTimeMs +
+            (options.timeoutWaitingForMessageProcessingMs || 10000)
+      ) {
+        this.logger?.info(
+          "AMQPCacoon.cancelConsumerChanel: Waiting for messages to be processed",
+          { messageStatistics: this.messageStatistics },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      this.logger?.info(
+        "AMQPCacoon.cancelConsumerChanel: Cancelled consumers",
+        { messageStatistics: this.messageStatistics },
+      );
     } catch (error) {
       this.logger?.error("AMQPCacoon.cancelConsumerChanel: Error", error);
     }
@@ -466,6 +537,8 @@ class AmqpCacoon {
   }
 
   static async gracefullShutdownAll(options: {
+    softwareBlockCanceledConsumers: boolean;
+    consumerTimeoutWaitingForMessageProcessingMs?: number;
     prePublishCallback: () => Promise<any>;
     preCloseCallback: () => Promise<any>;
   }) {
@@ -474,7 +547,17 @@ class AmqpCacoon {
       "AMQPCacoon.gracefullShutdownAll: START",
     );
     for (let conn of globalThis.amqpCacoonConnections) {
-      consumerCloseProms.push(conn.cancelConsumerChanel());
+      conn.shouldSoftwareBlockCanceledConsumber =
+        options.softwareBlockCanceledConsumers || false;
+      conn.logger?.info("AMQPCacoon.gracefullShutdownAll: Messages stats: ", {
+        messageStatistics: conn.messageStatistics,
+      });
+      consumerCloseProms.push(
+        conn.cancelConsumerChanel({
+          timeoutWaitingForMessageProcessingMs:
+            options.consumerTimeoutWaitingForMessageProcessingMs,
+        }),
+      );
     }
     await Promise.all(consumerCloseProms);
 

@@ -60,6 +60,7 @@ let amqpCacoon = new AmqpCacoon({
   // This might not be needed in environments where RMQ is setup by some other process!
   onChannelConnect: async (channel) => {
     try {
+      channel.prefetch(100); // This tells RabbitMQ not to give more than one message to a worker at a time.
       // Notice all of these are done in sequence with AWAIT. This is so that each
       // operation can depend on the prior operation having finished. This is important
       // when binding Queues to Exchanges, for example because you need both the
@@ -67,12 +68,12 @@ let amqpCacoon = new AmqpCacoon({
 
       // Make sure we have our example queue
       await channel.assertQueue(amqpConfig.exampleQueue, {
-        autoDelete: true,
+        autoDelete: false,
         durable: false,
       });
       // Make sure we have our example exchange
       await channel.assertExchange(amqpConfig.exampleExchange, "direct", {
-        autoDelete: true,
+        autoDelete: false,
         durable: false,
       });
       // Bind the new Exchange and Queue together
@@ -95,7 +96,7 @@ let amqpCacoon = new AmqpCacoon({
 
 async function main() {
   // Connects and sets up a subscription channelWrapper
-  await amqpCacoon.getConsumerChannel();
+  const chanel = await amqpCacoon.getConsumerChannel();
 
   // Register a consumer to consume single message at a time
   await amqpCacoon.registerConsumer(
@@ -103,6 +104,8 @@ async function main() {
     async (channelWrapper, msg) => {
       try {
         logger.info(`Message content: ${msg.content.toString()}`);
+        await new Promise((r) => setTimeout(r, 100)); // Simulate doing something async
+        logger.info(`Message processed: ${msg.content.toString()}`);
         // ... Do other processing here
         channelWrapper.ack(msg); // To ack a messages
       } catch (e) {
@@ -138,6 +141,8 @@ async function shutdown() {
   // - wait preCloseCallback
   // - close chanels
   await AmqpCacoon.gracefullShutdownAll({
+    softwareBlockCanceledConsumers: true,
+    consumerTimeoutWaitingForMessageProcessingMs: 60 * 1000,
     prePublishCallback: async () => {
       logger.info(`Shutting down... closing publisher channels...`);
       await new Promise((r) => setTimeout(r, 2000)); // wait 2 seconds

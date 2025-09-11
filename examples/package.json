@@ -5,7 +5,7 @@
   "main": "",
   "scripts": {
     "start": "echo \"Use npm run 'start-consumer' or 'start-publisher'\" && exit 1",
-    "start-consumer": "node src/example-amqp-consumer.js",
+    "start-consumer": "node --inspect src/example-amqp-consumer.js",
     "start-publisher": "node src/example-amqp-publish.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
