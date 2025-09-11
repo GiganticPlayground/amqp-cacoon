@@ -478,8 +478,12 @@ class AmqpCacoon {
   }
 
   async cancelConsumerChanel(
-    options: { timeoutWaitingForMessageProcessingMs?: number } = {
+    options: {
+      timeoutWaitingForMessageProcessingMs?: number;
+      softwareBlockCanceledConsumers?: boolean;
+    } = {
       timeoutWaitingForMessageProcessingMs: 10000,
+      softwareBlockCanceledConsumers: false,
     },
   ) {
     this.logger?.info("AMQPCacoon.cancelConsumerChanel: START");
@@ -497,6 +501,9 @@ class AmqpCacoon {
         { messageStatistics: this.messageStatistics },
       );
       await consumerChannel.cancelAll();
+
+      this.shouldSoftwareBlockCanceledConsumber =
+        options.softwareBlockCanceledConsumers || false;
       // Wait for all messages to be processed
       const startWaitTimeMs = Date.now();
       while (
@@ -547,13 +554,13 @@ class AmqpCacoon {
       "AMQPCacoon.gracefullShutdownAll: START",
     );
     for (let conn of globalThis.amqpCacoonConnections) {
-      conn.shouldSoftwareBlockCanceledConsumber =
-        options.softwareBlockCanceledConsumers || false;
       conn.logger?.info("AMQPCacoon.gracefullShutdownAll: Messages stats: ", {
         messageStatistics: conn.messageStatistics,
       });
       consumerCloseProms.push(
         conn.cancelConsumerChanel({
+          softwareBlockCanceledConsumers:
+            options.softwareBlockCanceledConsumers,
           timeoutWaitingForMessageProcessingMs:
             options.consumerTimeoutWaitingForMessageProcessingMs,
         }),
