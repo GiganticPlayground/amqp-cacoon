@@ -6,6 +6,7 @@
 import { expect } from "chai";
 import "mocha";
 import simple from "simple-mock";
+import amqp from "amqp-connection-manager";
 import AmqpCacoon, {
   IAmqpCacoonConfig,
   ChannelWrapper,
@@ -64,6 +65,8 @@ describe("Amqp Cacoon", () => {
   afterEach(() => {
     // After each test, clear out any MOCKs.
     simple.restore();
+    globalThis.amqpCacoonConnections = [];
+    (AmqpCacoon as any).sharedConnections = {};
   });
 
   // Just make sure it initializes
@@ -320,5 +323,129 @@ describe("Amqp Cacoon", () => {
     } catch (e) {
       throw e;
     }
+  });
+
+  it("reuses the first matching shared connection", async () => {
+    const sharedConnection = {
+      on: () => sharedConnection,
+      removeListener: () => sharedConnection,
+      createChannel: () => undefined,
+      close: () => Promise.resolve(undefined),
+    };
+    simple.mock(sharedConnection, "createChannel").returnWith(
+      { close: async () => {} } as any,
+      { close: async () => {} } as any,
+    );
+    simple.mock(sharedConnection, "close").resolveWith(undefined);
+
+    simple.mock(amqp, "connect").returnWith(sharedConnection as any);
+
+    const sharedConfig = {
+      ...amqpCacoonConfig,
+      shareConnection: true,
+    };
+    const first = new AmqpCacoon(sharedConfig);
+    const second = new AmqpCacoon(sharedConfig);
+
+    await first.getPublishChannel();
+    await second.getPublishChannel();
+
+    expect((amqp.connect as any).callCount, "expected a single shared connect").to.equal(1);
+    expect((first as any).connection, "first instance did not retain shared connection").to.equal(
+      sharedConnection,
+    );
+    expect((second as any).connection, "second instance did not reuse shared connection").to.equal(
+      sharedConnection,
+    );
+  });
+
+  it("only closes a shared connection when the last sharer closes", async () => {
+    const firstWrapper = { closeCallCount: 0, close: async () => undefined };
+    const secondWrapper = { closeCallCount: 0, close: async () => undefined };
+    firstWrapper.close = async () => {
+      firstWrapper.closeCallCount++;
+    };
+    secondWrapper.close = async () => {
+      secondWrapper.closeCallCount++;
+    };
+    let createChannelCallCount = 0;
+    const sharedConnection = {
+      on: () => sharedConnection,
+      removeListener: () => sharedConnection,
+      createChannel: () => {
+        createChannelCallCount++;
+        return createChannelCallCount === 1 ? firstWrapper : secondWrapper;
+      },
+      close: () => Promise.resolve(undefined),
+    };
+    simple.mock(sharedConnection, "close").resolveWith(undefined);
+
+    simple.mock(amqp, "connect").returnWith(sharedConnection as any);
+
+    const sharedConfig = {
+      ...amqpCacoonConfig,
+      shareConnection: true,
+    };
+    const first = new AmqpCacoon(sharedConfig);
+    const second = new AmqpCacoon(sharedConfig);
+
+    await first.getPublishChannel();
+    await second.getPublishChannel();
+
+    await first.close();
+    expect(sharedConnection.close.callCount, "shared connection closed too early").to.equal(0);
+
+    await second.close();
+    expect(sharedConnection.close.callCount, "shared connection should close once").to.equal(1);
+    expect(firstWrapper.closeCallCount, "first wrapper should be closed").to.equal(1);
+    expect(secondWrapper.closeCallCount, "second wrapper should be closed").to.equal(1);
+  });
+
+  it("gracefullShutdownAll waits for all close calls to finish", async () => {
+    let resolveFirstClose = () => undefined;
+    let resolveSecondClose = () => undefined;
+    let shutdownResolved = false;
+    const firstClosePromise = new Promise<void>((resolve) => {
+      resolveFirstClose = resolve;
+    });
+    const secondClosePromise = new Promise<void>((resolve) => {
+      resolveSecondClose = resolve;
+    });
+
+    globalThis.amqpCacoonConnections = [
+      {
+        logger: undefined,
+        messageStatistics: {},
+        cancelConsumerChanel: async () => Promise.resolve(),
+        cancelPublisherChanel: async () => Promise.resolve(),
+        close: () => firstClosePromise,
+      },
+      {
+        logger: undefined,
+        messageStatistics: {},
+        cancelConsumerChanel: async () => Promise.resolve(),
+        cancelPublisherChanel: async () => Promise.resolve(),
+        close: () => secondClosePromise,
+      },
+    ] as any;
+
+    const shutdownPromise = AmqpCacoon.gracefullShutdownAll({
+      softwareBlockCanceledConsumers: false,
+      prePublishCallback: async () => Promise.resolve(),
+      preCloseCallback: async () => Promise.resolve(),
+    }).then(() => {
+      shutdownResolved = true;
+    });
+
+    await Promise.resolve();
+    expect(shutdownResolved, "shutdown resolved before close promises completed").to.equal(false);
+
+    resolveFirstClose();
+    await Promise.resolve();
+    expect(shutdownResolved, "shutdown resolved before all closes completed").to.equal(false);
+
+    resolveSecondClose();
+    await shutdownPromise;
+    expect(shutdownResolved, "shutdown did not wait for all closes").to.equal(true);
   });
 });

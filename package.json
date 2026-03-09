@@ -1,6 +1,6 @@
 {
   "name": "amqp-cacoon",
-  "version": "3.3.1",
+  "version": "3.4.0",
   "description": "AmqpCacoon is an abstraction around amqplib that provides a simple interface with flow control included out of the box",
   "main": "build/index.js",
   "types": "build/index.d.ts",
