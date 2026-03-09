@@ -321,20 +321,27 @@ To run the examples:
 
 ## Running Tests for this Repo
 
-Note that all the tests for this REPO are UNIT TESTS that do not require an actual AMQP host to be
-setup. Consequently, the tests verify that the AMQP Cacoon wrappers are properly calling the underlying
-AMQPLIP and NODE AMQP MANAGER libraries. For a more "real world" test, see [Run the Examples](#run-the-examples).
+This repo has both unit tests and Docker-backed e2e tests against a real RabbitMQ broker.
 
 1. Install node modules (This also loads local modules from our own repositories)
 
    ```bash
    npm install
    ```
-1. Run tests
+1. Run unit tests
 
    ```bash
    npm run test
    ```
+1. Run the e2e test suite
+
+   ```bash
+   npm run test:e2e
+   ```
+
+`npm run test:e2e` starts RabbitMQ with Docker Compose at the beginning of the suite and tears it down when the suite finishes. The `test:e2e:up` and `test:e2e:down` scripts are still available if you want to inspect the broker manually while debugging.
+
+The e2e suite currently verifies graceful shutdown, backlog preservation during shutdown with `prefetch: 1`, and reconnect behavior for both consumers and queued publishes.
 
 ## Roadmap 
 

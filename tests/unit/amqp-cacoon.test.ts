@@ -225,17 +225,18 @@ describe("Amqp Cacoon", () => {
       // MOCK amqpCacoon.registerConsumerPrivate since that's as deep as we can go before
       // going inside AMQP Connection Manager or AMQPLIB which we're not testing
       simple.mock(amqpCacoon, "registerConsumerPrivate").callOriginal();
-      // MOCK channel.addSetup since that runs, connects to AMQP, then makes a callback to our consumer!
-      // Which we'll just MOCK
-      simple.mock(channelWrapper, "addSetup").resolveWith(channelWrapper);
+      // MOCK channel.consume since that is the wrapper API used to register consumers
+      simple.mock(channelWrapper, "consume").resolveWith({
+        consumerTag: consumerOptions.consumerTag,
+      });
       // Setup the name for a queue. Not important, just needs to be a string
       const queue = "someQueue";
       // Now register the consumer
       await amqpCacoon.registerConsumer(queue, handler, consumerOptions);
-      // Check to make addSetup was called
+      // Check to make consume was called
       expect(
-        channelWrapper.addSetup.callCount,
-        "addSetup was not called!",
+        channelWrapper.consume.callCount,
+        "consume was not called!",
       ).to.equal(1);
       // Let's check that 'registerConsumerPrivate' was passed the right things
       expect(
@@ -288,9 +289,10 @@ describe("Amqp Cacoon", () => {
       // MOCK amqpCacoon.registerConsumerPrivate since that's as deep as we can go before
       // going inside AMQP Connection Manager or AMQPLIB which we're not testing
       simple.mock(amqpCacoon, "registerConsumerPrivate").callOriginal();
-      // MOCK channel.addSetup since that runs, connects to AMQP, then makes a callback to our consumer!
-      // Which we'll just MOCK
-      simple.mock(channelWrapper, "addSetup").resolveWith(channelWrapper);
+      // MOCK channel.consume since that is the wrapper API used to register consumers
+      simple.mock(channelWrapper, "consume").resolveWith({
+        consumerTag: consumerBatchOptions.consumerTag,
+      });
       // Setup the name for a queue. Not important, just needs to be a string
       const queue = "someQueue";
       // Now register the consumer
@@ -299,10 +301,10 @@ describe("Amqp Cacoon", () => {
         handler,
         consumerBatchOptions,
       );
-      // Check to make addSetup was called
+      // Check to make consume was called
       expect(
-        channelWrapper.addSetup.callCount,
-        "addSetup was not called!",
+        channelWrapper.consume.callCount,
+        "consume was not called!",
       ).to.equal(1);
       // Let's check that 'registerConsumerPrivate' was passed the right things
       expect(

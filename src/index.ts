@@ -44,7 +44,9 @@ export interface ConsumeBatchMessages {
 }
 
 // Used for registerConsumer function
-export interface ConsumerOptions extends Options.Consume {}
+export interface ConsumerOptions extends Options.Consume {
+  prefetch?: number;
+}
 
 // Used for registerConsumerBatch function
 export interface ConsumerBatchOptions extends Options.Consume {
@@ -254,15 +256,11 @@ class AmqpCacoon {
     try {
       // Get consumer channel
       const channelWrapper = await this.getConsumerChannel();
-
-      channelWrapper.addSetup((channel: Channel) => {
-        // Register a consume on the current channel
-        return channel.consume(
-          queue,
-          consumerHandler.bind(this, channelWrapper),
-          options,
-        );
-      });
+      await channelWrapper.consume(
+        queue,
+        consumerHandler.bind(this, channelWrapper),
+        options,
+      );
     } catch (e) {
       if (this.logger)
         this.logger.error("AMQPCacoon.registerConsumerPrivate: Error: ", e);
