@@ -44,7 +44,9 @@ export interface ConsumeBatchMessages {
 }
 
 // Used for registerConsumer function
-export interface ConsumerOptions extends Options.Consume {}
+export interface ConsumerOptions extends Options.Consume {
+  prefetch?: number;
+}
 
 // Used for registerConsumerBatch function
 export interface ConsumerBatchOptions extends Options.Consume {
@@ -66,6 +68,7 @@ export interface IAmqpCacoonConfig {
   providers: {
     logger?: ILogger;
   };
+  shareConnection?: boolean;
   onChannelConnect?: ConnectCallback;
   onBrokerConnect?: BrokerConnectCallback;
   onBrokerDisconnect?: BrokerDisconnectCallback;
@@ -84,16 +87,30 @@ globalThis.amqpCacoonConnections = [];
  * 4. When consuming the callback registered in the previous step will be called when a message is received
  **/
 class AmqpCacoon {
+  private static sharedConnections: {
+    [key: string]: {
+      connection: AmqpConnectionManager;
+      refCount: number;
+    };
+  } = {};
   private pubChannelWrapper: ChannelWrapper | null;
   private subChannelWrapper: ChannelWrapper | null;
   private connection?: AmqpConnectionManager;
   private fullHostName: string;
   private amqp_opts: object;
+  private shareConnection: boolean;
+  private sharedConnectionKey: string | null;
   private logger?: ILogger;
   // private maxWaitForDrainMs: number;
   private onChannelConnect: ConnectCallback | null;
   private onBrokerConnect: Function | null;
   private onBrokerDisconnect: Function | null;
+  private hasInjectedConnectionEvents: boolean = false;
+  private readonly brokerConnectHandler: (
+    connection: Connection,
+    url: string,
+  ) => void;
+  private readonly brokerDisconnectHandler: (err: Error) => void;
   private isShuttingDownPublisher: boolean = false;
   private isShuttingDownConsumer: boolean = false;
   private hasCanceledConsumer: boolean = false;
@@ -119,11 +136,15 @@ class AmqpCacoon {
     this.fullHostName =
       config.connectionString || AmqpCacoon.getFullHostName(config);
     this.amqp_opts = config.amqp_opts;
+    this.shareConnection = config.shareConnection || false;
+    this.sharedConnectionKey = this.shareConnection ? this.fullHostName : null;
     this.logger = config.providers.logger;
     // this.maxWaitForDrainMs = config.maxWaitForDrainMs || 60000; // Default to 1 min
     this.onChannelConnect = config.onChannelConnect || null;
     this.onBrokerConnect = config.onBrokerConnect || null;
     this.onBrokerDisconnect = config.onBrokerDisconnect || null;
+    this.brokerConnectHandler = this.handleBrokerConnect.bind(this);
+    this.brokerDisconnectHandler = this.handleBrokerDisconnect.bind(this);
 
     // Add this instance to the global list of connections
     globalThis.amqpCacoonConnections.push(this);
@@ -150,9 +171,72 @@ class AmqpCacoon {
   }
 
   private injectConnectionEvents(connection: AmqpConnectionManager) {
+    if (this.hasInjectedConnectionEvents) return;
     // Subscribe to onConnect / onDisconnection functions for debugging
-    connection.on("connect", this.handleBrokerConnect.bind(this));
-    connection.on("disconnect", this.handleBrokerDisconnect.bind(this));
+    connection.on("connect", this.brokerConnectHandler);
+    connection.on("disconnect", this.brokerDisconnectHandler);
+    this.hasInjectedConnectionEvents = true;
+  }
+
+  private removeConnectionEvents(connection: AmqpConnectionManager) {
+    if (!this.hasInjectedConnectionEvents) return;
+    connection.removeListener("connect", this.brokerConnectHandler);
+    connection.removeListener("disconnect", this.brokerDisconnectHandler);
+    this.hasInjectedConnectionEvents = false;
+  }
+
+  private getOrCreateConnection() {
+    if (this.connection) {
+      return this.connection;
+    }
+
+    if (this.shareConnection && this.sharedConnectionKey) {
+      const sharedConnection =
+        AmqpCacoon.sharedConnections[this.sharedConnectionKey];
+      if (sharedConnection) {
+        sharedConnection.refCount++;
+        this.connection = sharedConnection.connection;
+        return this.connection;
+      }
+    }
+
+    const connection = amqp.connect([this.fullHostName], this.amqp_opts);
+    this.connection = connection;
+
+    if (this.shareConnection && this.sharedConnectionKey) {
+      AmqpCacoon.sharedConnections[this.sharedConnectionKey] = {
+        connection,
+        refCount: 1,
+      };
+    }
+
+    return connection;
+  }
+
+  private async releaseConnection() {
+    const connection = this.connection;
+    if (!connection) return;
+
+    this.removeConnectionEvents(connection);
+
+    if (this.shareConnection && this.sharedConnectionKey) {
+      const sharedConnection =
+        AmqpCacoon.sharedConnections[this.sharedConnectionKey];
+      if (sharedConnection && sharedConnection.connection === connection) {
+        sharedConnection.refCount--;
+        if (sharedConnection.refCount <= 0) {
+          delete AmqpCacoon.sharedConnections[this.sharedConnectionKey];
+          this.connection = undefined;
+          await connection.close();
+          return;
+        }
+        this.connection = undefined;
+        return;
+      }
+    }
+
+    this.connection = undefined;
+    await connection.close();
   }
 
   /**
@@ -167,17 +251,13 @@ class AmqpCacoon {
         return this.pubChannelWrapper;
       }
       // Connect if needed
-      this.connection =
-        this.connection || amqp.connect([this.fullHostName], this.amqp_opts);
-
-      if (this.connection) {
-        this.injectConnectionEvents(this.connection);
-      }
+      const connection = this.getOrCreateConnection();
+      this.injectConnectionEvents(connection);
 
       // Open a channel (get reference to ChannelWrapper)
       // Add a setup function that will be called on each connection retry
       // This function is specified in the config
-      this.pubChannelWrapper = this.connection.createChannel({
+      this.pubChannelWrapper = connection.createChannel({
         setup: (channel: ConfirmChannel) => {
           if (this.onChannelConnect) {
             return this.onChannelConnect(channel);
@@ -204,17 +284,13 @@ class AmqpCacoon {
       // Return the subChannel if we are already connected
       if (this.subChannelWrapper) return this.subChannelWrapper;
       // Connect if needed
-      this.connection =
-        this.connection || amqp.connect([this.fullHostName], this.amqp_opts);
-
-      if (this.connection) {
-        this.injectConnectionEvents(this.connection);
-      }
+      const connection = this.getOrCreateConnection();
+      this.injectConnectionEvents(connection);
 
       // Open a channel (get reference to ChannelWrapper)
       // Add a setup function that will be called on each connection retry
       // This function is specified in the config
-      this.subChannelWrapper = this.connection.createChannel({
+      this.subChannelWrapper = connection.createChannel({
         setup: (channel: ConfirmChannel) => {
           // `channel` here is a regular amqplib `ConfirmChannel`.
           // Note that `this` here is the channelWrapper instance.
@@ -254,15 +330,11 @@ class AmqpCacoon {
     try {
       // Get consumer channel
       const channelWrapper = await this.getConsumerChannel();
-
-      channelWrapper.addSetup((channel: Channel) => {
-        // Register a consume on the current channel
-        return channel.consume(
-          queue,
-          consumerHandler.bind(this, channelWrapper),
-          options,
-        );
-      });
+      await channelWrapper.consume(
+        queue,
+        consumerHandler.bind(this, channelWrapper),
+        options,
+      );
     } catch (e) {
       if (this.logger)
         this.logger.error("AMQPCacoon.registerConsumerPrivate: Error: ", e);
@@ -435,9 +507,7 @@ class AmqpCacoon {
     try {
       await this.closePublishChannel();
       await this.closeConsumerChannel();
-      if (this.connection) {
-        return this.connection.close();
-      }
+      await this.releaseConnection();
     } catch (error) {
       // Some unsent messages
     }
@@ -582,7 +652,7 @@ class AmqpCacoon {
     for (let conn of globalThis.amqpCacoonConnections) {
       closeProms.push(conn.close());
     }
-    Promise.all(closeProms);
+    await Promise.all(closeProms);
     globalThis.amqpCacoonConnections?.[0]?.logger?.info(
       "AMQPCacoon.gracefullShutdownAll: END",
     );

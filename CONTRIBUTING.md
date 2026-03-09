@@ -32,21 +32,20 @@ Please note we have a code of conduct, please follow it in all your interactions
 
 **Note:** Be sure to follow our [Code of Conduct](link-to-code-of-conduct) and [Contributor License Agreement](link-to-CLA) if we have one.
 
-## Releases and Semantic Versioning
+## Releases and Versioning
 
-We use GitHub's releases feature and semantic versioning for managing releases for our project. Here's how to create releases and use specific version tags for working with npm semantic versioning:
+We manage releases manually using GitHub Releases and semantic versioning.
 
-1. To create a new release, go to the "Releases" tab in the GitHub repository.
+When preparing a release, update the version in `package.json` to the intended semver value before creating the release tag. The GitHub release tag should match the package version (for example, `package.json` version `3.4.0` should be released with tag `v3.4.0`).
+1. Update the version in `package.json`.
+2. Confirm any release notes or documentation updates that should ship with the release.
+3. Go to the "Releases" tab in the GitHub repository.
+4. Click on the "Draft a new release" button.
+5. In the "Tag version" field, enter the matching semver-formatted tag (for example, `v1.0.0`).
+6. Enter a release title and description to provide details about this release.
+7. Click "Publish release" to create the release.
 
-2. Click on the "Draft a new release" button.
-
-3. In the "Tag version" field, enter your specific semver-formatted tag (e.g., v1.0.0) for the release.
-
-4. Enter a release title and description to provide details about this release.
-
-5. Click "Publish release" to create the release.
-
-With this process, we ensure that every release in this project corresponds to a semantic versioning tag and a corresponding release on GitHub.
+This keeps the published package version and GitHub release tag aligned.
 
 Thank you for your interest in contributing to [Your Project Name]!
 

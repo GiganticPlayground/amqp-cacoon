@@ -4,10 +4,8 @@
   <img height='300' src="./assets/amqp_cacoon_2.png">
 </p>
 
-[![CircleCI](https://circleci.com/gh/valtech-sd/amqp-cacoon.svg?style=svg)](https://circleci.com/gh/valtech-sd/amqp-cacoon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://badges.frapsoft.com/typescript/code/typescript.svg)](https://github.com/ellerbrock/typescript-badges/)
-[![semantic-release](https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg)](https://github.com/semantic-release/semantic-release)
 
 ## Overview
 
@@ -321,20 +319,27 @@ To run the examples:
 
 ## Running Tests for this Repo
 
-Note that all the tests for this REPO are UNIT TESTS that do not require an actual AMQP host to be
-setup. Consequently, the tests verify that the AMQP Cacoon wrappers are properly calling the underlying
-AMQPLIP and NODE AMQP MANAGER libraries. For a more "real world" test, see [Run the Examples](#run-the-examples).
+This repo has both unit tests and Docker-backed e2e tests against a real RabbitMQ broker.
 
 1. Install node modules (This also loads local modules from our own repositories)
 
    ```bash
    npm install
    ```
-1. Run tests
+1. Run unit tests
 
    ```bash
    npm run test
    ```
+1. Run the e2e test suite
+
+   ```bash
+   npm run test:e2e
+   ```
+
+`npm run test:e2e` starts RabbitMQ with Docker Compose at the beginning of the suite and tears it down when the suite finishes. The `test:e2e:up` and `test:e2e:down` scripts are still available if you want to inspect the broker manually while debugging.
+
+The e2e suite currently verifies graceful shutdown, backlog preservation during shutdown with `prefetch: 1`, and reconnect behavior for both consumers and queued publishes.
 
 ## Roadmap 
 

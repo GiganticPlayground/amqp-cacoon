@@ -1,6 +1,6 @@
 {
   "name": "amqp-cacoon",
-  "version": "3.3.1",
+  "version": "3.4.0",
   "description": "AmqpCacoon is an abstraction around amqplib that provides a simple interface with flow control included out of the box",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -14,7 +14,11 @@
   "scripts": {
     "prepare": "rimraf ./build && tsc",
     "build": "rimraf ./build && tsc",
-    "test": "rimraf ./build && tsc && mocha --exit -r ts-node/register ./tests/**/*.test.ts"
+    "test": "npm run test:unit",
+    "test:unit": "rimraf ./build && tsc && mocha --exit -r ts-node/register ./tests/unit/**/*.test.ts",
+    "test:e2e": "rimraf ./build && tsc && mocha --exit -r ts-node/register ./tests/e2e/**/*.test.ts",
+    "test:e2e:up": "docker compose -f docker-compose.e2e.yml up -d",
+    "test:e2e:down": "docker compose -f docker-compose.e2e.yml down -v"
   },
   "dependencies": {
     "amqp-connection-manager": "~4.1.14",
