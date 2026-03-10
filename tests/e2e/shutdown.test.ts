@@ -53,6 +53,12 @@ function createQueueName() {
     .slice(2)}`;
 }
 
+function createCleanupQueueName() {
+  return `amqp-cacoon-e2e-cleanup-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+}
+
 function createConfig(queue: string): IAmqpCacoonConfig {
   return {
     protocol: "amqp",
@@ -133,6 +139,7 @@ describe("Amqp Cacoon E2E", function () {
   this.timeout(30000);
 
   let queueName: string;
+  let cleanupQueueName: string;
   let consumer: AmqpCacoon;
   let publisher: AmqpCacoon;
 
@@ -143,6 +150,7 @@ describe("Amqp Cacoon E2E", function () {
 
   beforeEach(async () => {
     queueName = createQueueName();
+    cleanupQueueName = createCleanupQueueName();
     await waitForRabbitMq(queueName);
     consumer = new AmqpCacoon(createConfig(queueName));
     publisher = new AmqpCacoon(createConfig(queueName));
@@ -159,6 +167,7 @@ describe("Amqp Cacoon E2E", function () {
       const channel = await publisher.getPublishChannel();
       await channel.waitForConnect();
       await channel.deleteQueue(queueName);
+      await channel.deleteQueue(cleanupQueueName);
     } catch (error) {
       // Ignore cleanup failures when the connection has already been closed.
     }
@@ -571,6 +580,410 @@ describe("Amqp Cacoon E2E", function () {
       ).to.deep.equal({});
     } finally {
       await Promise.allSettled([sharedPublisher.close(), sharedConsumer.close()]);
+    }
+  });
+
+  /**
+   * Verifies that `prePublishCallback` can publish cleanup messages while
+   * `gracefullShutdownAll()` is shutting down multiple live connections.
+   * We need this because one intended shutdown pattern is to cancel consumers,
+   * publish final cleanup messages, and only then close publishers/connections.
+   *
+   * Steps:
+   * 1. Create multiple live AMQP instances and ensure their publisher channels are connected.
+   * 2. Start a blocking consumer so shutdown has real in-flight work to wait on.
+   * 3. Create a separate cleanup queue that is distinct from the consumed queue.
+   * 4. Trigger `gracefullShutdownAll()` with a `prePublishCallback` that publishes cleanup messages.
+   * 5. Assert shutdown does not finish until the in-flight handler is released.
+   * 6. After shutdown completes, inspect the cleanup queue and verify the cleanup publishes were delivered.
+   */
+  it("gracefullShutdownAll allows prePublishCallback to publish cleanup messages to a separate queue across multiple live connections", async () => {
+    const additionalPublisher = new AmqpCacoon(createConfig(queueName));
+    const handlerStarted = createDeferred();
+    const allowHandlerToFinish = createDeferred();
+    const handlerFinished = createDeferred();
+    let shutdownResolved = false;
+
+    try {
+      await (await publisher.getPublishChannel()).waitForConnect();
+      await (await additionalPublisher.getPublishChannel()).waitForConnect();
+      await (await publisher.getPublishChannel()).assertQueue(cleanupQueueName, {
+        durable: false,
+        autoDelete: false,
+      });
+
+      await consumer.registerConsumer(
+        queueName,
+        async (channel, msg: ConsumeMessage) => {
+          handlerStarted.resolve();
+          await allowHandlerToFinish.promise;
+          channel.ack(msg);
+          handlerFinished.resolve();
+        },
+        { noAck: false, prefetch: 1 },
+      );
+
+      await publisher.publish("", queueName, Buffer.from("message-before-cleanup-publish"));
+      await handlerStarted.promise;
+
+      const shutdownPromise = AmqpCacoon.gracefullShutdownAll({
+        softwareBlockCanceledConsumers: true,
+        consumerTimeoutWaitingForMessageProcessingMs: 60 * 1000,
+        prePublishCallback: async () => {
+          await publisher.publish(
+            "",
+            cleanupQueueName,
+            Buffer.from("cleanup-message-1"),
+          );
+          await additionalPublisher.publish(
+            "",
+            cleanupQueueName,
+            Buffer.from("cleanup-message-2"),
+          );
+        },
+        preCloseCallback: async () => Promise.resolve(),
+      }).then(() => {
+        shutdownResolved = true;
+      });
+
+      await delay(SHUTDOWN_WAIT_ASSERTION_MS);
+      expect(
+        shutdownResolved,
+        "gracefullShutdownAll resolved before the in-flight handler finished",
+      ).to.equal(false);
+
+      allowHandlerToFinish.resolve();
+      await handlerFinished.promise;
+      await shutdownPromise;
+
+      const verifier = new AmqpCacoon(createConfig(queueName));
+      try {
+        const verifierChannel = await verifier.getPublishChannel();
+        await verifierChannel.waitForConnect();
+        const queueState = await verifierChannel.checkQueue(cleanupQueueName);
+
+        expect(
+          queueState.messageCount,
+          "expected both cleanup messages to remain on the cleanup queue after shutdown",
+        ).to.equal(2);
+      } finally {
+        await verifier.close();
+      }
+    } finally {
+      await additionalPublisher.close();
+    }
+  });
+
+  /**
+   * Verifies that `prePublishCallback` can publish from a publisher instance whose
+   * publish channel was not opened before shutdown started.
+   * We need this because callers should not have to warm a publisher channel during
+   * normal runtime just to make a shutdown cleanup publish reliable.
+   *
+   * Steps:
+   * 1. Create a separate cleanup queue.
+   * 2. Create a cold publisher instance and do not call `getPublishChannel()` on it.
+   * 3. Start a blocking consumer so `gracefullShutdownAll()` has real work to coordinate.
+   * 4. Trigger `gracefullShutdownAll()` with a `prePublishCallback` that publishes from the cold publisher.
+   * 5. Assert shutdown waits for the in-flight consumer.
+   * 6. After shutdown completes, inspect the cleanup queue and verify the cold publisher delivered its cleanup message.
+   */
+  it("gracefullShutdownAll allows prePublishCallback to publish from a cold publisher", async () => {
+    const coldPublisher = new AmqpCacoon(createConfig(queueName));
+    const handlerStarted = createDeferred();
+    const allowHandlerToFinish = createDeferred();
+    const handlerFinished = createDeferred();
+    let shutdownResolved = false;
+
+    try {
+      const publisherChannel = await publisher.getPublishChannel();
+      await publisherChannel.waitForConnect();
+      await publisherChannel.assertQueue(cleanupQueueName, {
+        durable: false,
+        autoDelete: false,
+      });
+
+      await consumer.registerConsumer(
+        queueName,
+        async (channel, msg: ConsumeMessage) => {
+          handlerStarted.resolve();
+          await allowHandlerToFinish.promise;
+          channel.ack(msg);
+          handlerFinished.resolve();
+        },
+        { noAck: false, prefetch: 1 },
+      );
+
+      await publisher.publish("", queueName, Buffer.from("message-before-cold-cleanup-publish"));
+      await handlerStarted.promise;
+
+      const shutdownPromise = AmqpCacoon.gracefullShutdownAll({
+        softwareBlockCanceledConsumers: true,
+        consumerTimeoutWaitingForMessageProcessingMs: 60 * 1000,
+        prePublishCallback: async () => {
+          await coldPublisher.publish(
+            "",
+            cleanupQueueName,
+            Buffer.from("cleanup-message-from-cold-publisher"),
+          );
+        },
+        preCloseCallback: async () => Promise.resolve(),
+      }).then(() => {
+        shutdownResolved = true;
+      });
+
+      await delay(SHUTDOWN_WAIT_ASSERTION_MS);
+      expect(
+        shutdownResolved,
+        "gracefullShutdownAll resolved before the in-flight handler finished",
+      ).to.equal(false);
+
+      allowHandlerToFinish.resolve();
+      await handlerFinished.promise;
+      await shutdownPromise;
+
+      const verifier = new AmqpCacoon(createConfig(queueName));
+      try {
+        const verifierChannel = await verifier.getPublishChannel();
+        await verifierChannel.waitForConnect();
+        const queueState = await verifierChannel.checkQueue(cleanupQueueName);
+
+        expect(
+          queueState.messageCount,
+          "expected the cold publisher cleanup message to be present on the cleanup queue after shutdown",
+        ).to.equal(1);
+      } finally {
+        await verifier.close();
+      }
+    } finally {
+      await coldPublisher.close();
+    }
+  });
+
+  /**
+   * Verifies shutdown can suppress `onChannelConnect` while still allowing a cold
+   * cleanup publisher to publish during `prePublishCallback`.
+   * We need this because some services want shutdown cleanup publishes to proceed
+   * without running topology setup callbacks again during the shutdown window.
+   *
+   * Steps:
+   * 1. Create a queue pair where the cleanup publisher has an `onChannelConnect` callback that would increment a counter.
+   * 2. Do not open that cleanup publisher before shutdown so it stays cold.
+   * 3. Start a blocking consumer to force real shutdown coordination.
+   * 4. Trigger `gracefullShutdownAll()` with `disableOnChannelConnectDuringShutdown: true`.
+   * 5. Publish from the cold cleanup publisher inside `prePublishCallback`.
+   * 6. Verify the cleanup message is delivered and the cleanup publisher's `onChannelConnect` callback was never called.
+   */
+  it("gracefullShutdownAll can disable onChannelConnect during shutdown for a cold cleanup publisher", async () => {
+    const flaggedQueueName = createQueueName();
+    const flaggedCleanupQueueName = createCleanupQueueName();
+    const handlerStarted = createDeferred();
+    const allowHandlerToFinish = createDeferred();
+    const handlerFinished = createDeferred();
+    let shutdownResolved = false;
+    let cleanupOnChannelConnectCallCount = 0;
+
+    const flaggedConsumer = new AmqpCacoon(createConfig(flaggedQueueName));
+    const flaggedPublisher = new AmqpCacoon(createConfig(flaggedQueueName));
+    const flaggedColdCleanupPublisher = new AmqpCacoon({
+      ...createConfig(flaggedQueueName),
+      onChannelConnect: async () => {
+        cleanupOnChannelConnectCallCount++;
+        return Promise.resolve();
+      },
+    });
+
+    try {
+      const flaggedPublisherChannel = await flaggedPublisher.getPublishChannel();
+      await flaggedPublisherChannel.waitForConnect();
+      await flaggedPublisherChannel.assertQueue(flaggedQueueName, {
+        durable: false,
+        autoDelete: false,
+      });
+      await flaggedPublisherChannel.assertQueue(flaggedCleanupQueueName, {
+        durable: false,
+        autoDelete: false,
+      });
+
+      await flaggedConsumer.registerConsumer(
+        flaggedQueueName,
+        async (channel, msg: ConsumeMessage) => {
+          handlerStarted.resolve();
+          await allowHandlerToFinish.promise;
+          channel.ack(msg);
+          handlerFinished.resolve();
+        },
+        { noAck: false, prefetch: 1 },
+      );
+
+      await flaggedPublisher.publish(
+        "",
+        flaggedQueueName,
+        Buffer.from("message-before-flagged-cold-cleanup-publish"),
+      );
+      await handlerStarted.promise;
+
+      const shutdownPromise = AmqpCacoon.gracefullShutdownAll({
+        softwareBlockCanceledConsumers: true,
+        consumerTimeoutWaitingForMessageProcessingMs: 60 * 1000,
+        disableOnChannelConnectDuringShutdown: true,
+        prePublishCallback: async () => {
+          await flaggedColdCleanupPublisher.publish(
+            "",
+            flaggedCleanupQueueName,
+            Buffer.from("cleanup-message-with-disabled-onChannelConnect"),
+          );
+        },
+        preCloseCallback: async () => Promise.resolve(),
+      }).then(() => {
+        shutdownResolved = true;
+      });
+
+      await delay(SHUTDOWN_WAIT_ASSERTION_MS);
+      expect(
+        shutdownResolved,
+        "gracefullShutdownAll resolved before the in-flight handler finished",
+      ).to.equal(false);
+
+      allowHandlerToFinish.resolve();
+      await handlerFinished.promise;
+      await shutdownPromise;
+
+      const verifier = new AmqpCacoon(createConfig(flaggedQueueName));
+      try {
+        const verifierChannel = await verifier.getPublishChannel();
+        await verifierChannel.waitForConnect();
+        const queueState = await verifierChannel.checkQueue(flaggedCleanupQueueName);
+
+        expect(
+          queueState.messageCount,
+          "expected the cleanup message to be present when onChannelConnect is disabled during shutdown",
+        ).to.equal(1);
+        expect(
+          cleanupOnChannelConnectCallCount,
+          "cleanup publisher onChannelConnect should be skipped during shutdown when the flag is enabled",
+        ).to.equal(0);
+      } finally {
+        await verifier.close();
+      }
+    } finally {
+      const cleanupPublisherChannel = await flaggedPublisher.getPublishChannel();
+      await cleanupPublisherChannel.waitForConnect();
+      await cleanupPublisherChannel.deleteQueue(flaggedQueueName);
+      await cleanupPublisherChannel.deleteQueue(flaggedCleanupQueueName);
+
+      await Promise.allSettled([
+        flaggedConsumer.close(),
+        flaggedPublisher.close(),
+        flaggedColdCleanupPublisher.close(),
+      ]);
+      globalThis.amqpCacoonConnections = [];
+      (AmqpCacoon as any).sharedConnections = {};
+    }
+  });
+
+  /**
+   * Verifies shutdown behavior with a large number of non-shared instances.
+   * We need this because small e2e cases can pass while large parallel shutdown fan-out
+   * still exposes timing or coordination problems in real services.
+   *
+   * Steps:
+   * 1. Create enough additional non-shared instances to bring the total to 100.
+   * 2. Warm publisher channels on those instances so shutdown has many live connections to close.
+   * 3. Create a separate cold publisher and do not open its publish channel before shutdown.
+   * 4. Start one blocking consumer so shutdown still has real in-flight work to coordinate.
+   * 5. Trigger `gracefullShutdownAll()` with a cleanup publish to a separate queue from the cold publisher.
+   * 6. Assert shutdown does not resolve before the in-flight handler finishes.
+   * 7. Release the handler and verify shutdown completes and the cleanup message was delivered.
+   */
+  it("gracefullShutdownAll completes with 100 non-shared instances and a cold cleanup publisher", async function () {
+    this.timeout(120000);
+
+    const totalInstances = 100;
+    const extraInstanceCount = totalInstances - 2; // account for the default consumer + publisher created in beforeEach
+    const extraInstances: AmqpCacoon[] = [];
+    const coldPublisher = new AmqpCacoon(createConfig(queueName));
+    const handlerStarted = createDeferred();
+    const allowHandlerToFinish = createDeferred();
+    const handlerFinished = createDeferred();
+    let shutdownResolved = false;
+
+    try {
+      const publisherChannel = await publisher.getPublishChannel();
+      await publisherChannel.waitForConnect();
+      await publisherChannel.assertQueue(cleanupQueueName, {
+        durable: false,
+        autoDelete: false,
+      });
+
+      for (let i = 0; i < extraInstanceCount; i++) {
+        extraInstances.push(new AmqpCacoon(createConfig(queueName)));
+      }
+
+      await Promise.all(
+        extraInstances.map(async (instance) => {
+          const channel = await instance.getPublishChannel();
+          await channel.waitForConnect();
+        }),
+      );
+
+      await consumer.registerConsumer(
+        queueName,
+        async (channel, msg: ConsumeMessage) => {
+          handlerStarted.resolve();
+          await allowHandlerToFinish.promise;
+          channel.ack(msg);
+          handlerFinished.resolve();
+        },
+        { noAck: false, prefetch: 1 },
+      );
+
+      await publisher.publish("", queueName, Buffer.from("message-before-100-instance-shutdown"));
+      await handlerStarted.promise;
+
+      const shutdownPromise = AmqpCacoon.gracefullShutdownAll({
+        softwareBlockCanceledConsumers: true,
+        consumerTimeoutWaitingForMessageProcessingMs: 60 * 1000,
+        prePublishCallback: async () => {
+          await coldPublisher.publish(
+            "",
+            cleanupQueueName,
+            Buffer.from("cleanup-message-100-instance-shutdown"),
+          );
+        },
+        preCloseCallback: async () => Promise.resolve(),
+      }).then(() => {
+        shutdownResolved = true;
+      });
+
+      await delay(SHUTDOWN_WAIT_ASSERTION_MS);
+      expect(
+        shutdownResolved,
+        "gracefullShutdownAll resolved before the in-flight handler finished under 100-instance load",
+      ).to.equal(false);
+
+      allowHandlerToFinish.resolve();
+      await handlerFinished.promise;
+      await shutdownPromise;
+
+      const verifier = new AmqpCacoon(createConfig(queueName));
+      try {
+        const verifierChannel = await verifier.getPublishChannel();
+        await verifierChannel.waitForConnect();
+        const queueState = await verifierChannel.checkQueue(cleanupQueueName);
+
+        expect(
+          queueState.messageCount,
+          "expected the cleanup message to be present on the cleanup queue after 100-instance shutdown",
+        ).to.equal(1);
+      } finally {
+        await verifier.close();
+      }
+    } finally {
+      await Promise.allSettled([
+        coldPublisher.close(),
+        ...extraInstances.map((instance) => instance.close()),
+      ]);
     }
   });
 });

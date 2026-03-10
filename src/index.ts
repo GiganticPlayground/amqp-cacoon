@@ -105,6 +105,7 @@ class AmqpCacoon {
   private onChannelConnect: ConnectCallback | null;
   private onBrokerConnect: Function | null;
   private onBrokerDisconnect: Function | null;
+  private disableOnChannelConnectDuringShutdown: boolean = false;
   private hasInjectedConnectionEvents: boolean = false;
   private readonly brokerConnectHandler: (
     connection: Connection,
@@ -178,6 +179,28 @@ class AmqpCacoon {
     this.hasInjectedConnectionEvents = true;
   }
 
+  private shouldSkipOnChannelConnectDuringShutdown() {
+    return (
+      this.disableOnChannelConnectDuringShutdown &&
+      (this.isShuttingDownConsumer || this.isShuttingDownPublisher)
+    );
+  }
+
+  private runOnChannelConnect(channel: ConfirmChannel) {
+    if (this.shouldSkipOnChannelConnectDuringShutdown()) {
+      this.logger?.info(
+        "AMQPCacoon.onChannelConnect: Skipping callback during shutdown",
+      );
+      return Promise.resolve();
+    }
+
+    if (this.onChannelConnect) {
+      return this.onChannelConnect(channel);
+    } else {
+      return Promise.resolve();
+    }
+  }
+
   private removeConnectionEvents(connection: AmqpConnectionManager) {
     if (!this.hasInjectedConnectionEvents) return;
     connection.removeListener("connect", this.brokerConnectHandler);
@@ -224,9 +247,16 @@ class AmqpCacoon {
         AmqpCacoon.sharedConnections[this.sharedConnectionKey];
       if (sharedConnection && sharedConnection.connection === connection) {
         sharedConnection.refCount--;
+        this.logger?.info("AMQPCacoon.close: Released shared connection", {
+          sharedConnectionKey: this.sharedConnectionKey,
+          remainingReferences: sharedConnection.refCount,
+        });
         if (sharedConnection.refCount <= 0) {
           delete AmqpCacoon.sharedConnections[this.sharedConnectionKey];
           this.connection = undefined;
+          this.logger?.info("AMQPCacoon.close: Closing final shared connection", {
+            sharedConnectionKey: this.sharedConnectionKey,
+          });
           await connection.close();
           return;
         }
@@ -236,6 +266,7 @@ class AmqpCacoon {
     }
 
     this.connection = undefined;
+    this.logger?.info("AMQPCacoon.close: Closing dedicated connection");
     await connection.close();
   }
 
@@ -258,13 +289,7 @@ class AmqpCacoon {
       // Add a setup function that will be called on each connection retry
       // This function is specified in the config
       this.pubChannelWrapper = connection.createChannel({
-        setup: (channel: ConfirmChannel) => {
-          if (this.onChannelConnect) {
-            return this.onChannelConnect(channel);
-          } else {
-            return Promise.resolve();
-          }
-        },
+        setup: (channel: ConfirmChannel) => this.runOnChannelConnect(channel),
       });
     } catch (e) {
       if (this.logger) this.logger.error("AMQPCacoon.connect: Error: ", e);
@@ -291,15 +316,7 @@ class AmqpCacoon {
       // Add a setup function that will be called on each connection retry
       // This function is specified in the config
       this.subChannelWrapper = connection.createChannel({
-        setup: (channel: ConfirmChannel) => {
-          // `channel` here is a regular amqplib `ConfirmChannel`.
-          // Note that `this` here is the channelWrapper instance.
-          if (this.onChannelConnect) {
-            return this.onChannelConnect(channel);
-          } else {
-            return Promise.resolve();
-          }
-        },
+        setup: (channel: ConfirmChannel) => this.runOnChannelConnect(channel),
       });
     } catch (e) {
       if (this.logger)
@@ -504,12 +521,16 @@ class AmqpCacoon {
   }
 
   async close() {
+    this.logger?.info("AMQPCacoon.close: START");
     try {
+      this.logger?.info("AMQPCacoon.close: Closing publish channel");
       await this.closePublishChannel();
+      this.logger?.info("AMQPCacoon.close: Closing consumer channel");
       await this.closeConsumerChannel();
       await this.releaseConnection();
+      this.logger?.info("AMQPCacoon.close: END");
     } catch (error) {
-      // Some unsent messages
+      this.logger?.error("AMQPCacoon.close: Error", error);
     }
   }
 
@@ -601,7 +622,10 @@ class AmqpCacoon {
   async gracefullShutdown(options: {
     prePublishCallback: () => Promise<any>;
     preCloseCallback: () => Promise<any>;
+    disableOnChannelConnectDuringShutdown?: boolean;
   }) {
+    this.disableOnChannelConnectDuringShutdown =
+      options.disableOnChannelConnectDuringShutdown || false;
     await this.cancelConsumerChanel();
 
     if (options.prePublishCallback) await options.prePublishCallback();
@@ -618,12 +642,15 @@ class AmqpCacoon {
     consumerTimeoutWaitingForMessageProcessingMs?: number;
     prePublishCallback: () => Promise<any>;
     preCloseCallback: () => Promise<any>;
+    disableOnChannelConnectDuringShutdown?: boolean;
   }) {
     const consumerCloseProms = [];
     globalThis.amqpCacoonConnections?.[0]?.logger?.info(
       "AMQPCacoon.gracefullShutdownAll: START",
     );
     for (let conn of globalThis.amqpCacoonConnections) {
+      conn.disableOnChannelConnectDuringShutdown =
+        options.disableOnChannelConnectDuringShutdown || false;
       conn.logger?.info("AMQPCacoon.gracefullShutdownAll: Messages stats: ", {
         messageStatistics: conn.messageStatistics,
       });

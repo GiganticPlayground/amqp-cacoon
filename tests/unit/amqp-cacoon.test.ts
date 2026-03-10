@@ -448,4 +448,29 @@ describe("Amqp Cacoon", () => {
     await shutdownPromise;
     expect(shutdownResolved, "shutdown did not wait for all closes").to.equal(true);
   });
+
+  it("skips onChannelConnect during shutdown when the shutdown flag is enabled", async () => {
+    let onChannelConnectCallCount = 0;
+    const channel = {} as ConfirmChannel;
+    const amqpCacoon = new AmqpCacoon({
+      ...amqpCacoonConfig,
+      onChannelConnect: async (incomingChannel: ConfirmChannel) => {
+        onChannelConnectCallCount++;
+        expect(incomingChannel, "unexpected channel passed to onChannelConnect").to.equal(
+          channel,
+        );
+        return Promise.resolve();
+      },
+    });
+
+    (amqpCacoon as any).disableOnChannelConnectDuringShutdown = true;
+    (amqpCacoon as any).isShuttingDownPublisher = true;
+
+    await (amqpCacoon as any).runOnChannelConnect(channel);
+
+    expect(
+      onChannelConnectCallCount,
+      "onChannelConnect should be skipped during shutdown when the flag is enabled",
+    ).to.equal(0);
+  });
 });
