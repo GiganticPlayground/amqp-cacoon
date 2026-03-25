@@ -17,14 +17,14 @@ import AmqpCacoon, {
 } from "../../src";
 
 // Change the fullHostName below also if you change any of the config values!
-const fullHostName = "amqp://valtech:iscool@localhost:5672";
+const fullHostName = "amqp://guest:guest@localhost:5672";
 const config: any = {
   messageBus: {
     // Protocol should be "amqp" or "amqps"
     protocol: "amqp",
     // Username + Password on the RabbitMQ host
-    username: "valtech",
-    password: "iscool",
+    username: "guest",
+    password: "guest",
     // Host
     host: "localhost",
     // Port
@@ -102,6 +102,20 @@ describe("Amqp Cacoon", () => {
       (amqpCacoon as any).fullHostName,
       "fullHostName was not set property in the underlying library!",
     ).to.equal(fullHostName + `/${vhost}`);
+  });
+
+  it("Constructor: connectionUrls are retained when provided", () => {
+    const connectionUrls = [
+      "amqp://guest:guest@rabbit-1:5672",
+      "amqp://guest:guest@rabbit-2:5672",
+    ];
+    const amqpCacoon = new AmqpCacoon({
+      ...amqpCacoonConfig,
+      connectionUrls,
+    });
+
+    expect((amqpCacoon as any).connectionUrls).to.equal(connectionUrls);
+    expect((amqpCacoon as any).fullHostName).to.equal(fullHostName);
   });
 
   it("getConsumerChannel() - returns a channelWrapper", async () => {
@@ -357,6 +371,70 @@ describe("Amqp Cacoon", () => {
     expect((second as any).connection, "second instance did not reuse shared connection").to.equal(
       sharedConnection,
     );
+  });
+
+  it("passes connectionUrls to amqp.connect when provided", async () => {
+    const connectionUrls = [
+      "amqp://guest:guest@rabbit-1:5672",
+      "amqp://guest:guest@rabbit-2:5672",
+    ];
+    const multiConnection = {
+      on: () => multiConnection,
+      removeListener: () => multiConnection,
+      createChannel: () => undefined,
+      close: () => Promise.resolve(undefined),
+    };
+    simple.mock(multiConnection, "createChannel").returnWith({
+      close: async () => {},
+    } as any);
+    simple.mock(amqp, "connect").returnWith(multiConnection as any);
+
+    const amqpCacoon = new AmqpCacoon({
+      ...amqpCacoonConfig,
+      connectionUrls,
+    });
+
+    await amqpCacoon.getPublishChannel();
+
+    expect((amqp.connect as any).callCount).to.equal(1);
+    expect((amqp.connect as any).lastCall.args[0]).to.equal(connectionUrls);
+    expect((amqp.connect as any).lastCall.args[1]).to.equal(
+      amqpCacoonConfig.amqp_opts,
+    );
+  });
+
+  it("shares a multi-url connection when configured", async () => {
+    const connectionUrls = [
+      "amqp://guest:guest@rabbit-1:5672",
+      "amqp://guest:guest@rabbit-2:5672",
+    ];
+    const sharedConnection = {
+      on: () => sharedConnection,
+      removeListener: () => sharedConnection,
+      createChannel: () => undefined,
+      close: () => Promise.resolve(undefined),
+    };
+    simple.mock(sharedConnection, "createChannel").returnWith(
+      { close: async () => {} } as any,
+      { close: async () => {} } as any,
+    );
+    simple.mock(sharedConnection, "close").resolveWith(undefined);
+    simple.mock(amqp, "connect").returnWith(sharedConnection as any);
+
+    const sharedConfig = {
+      ...amqpCacoonConfig,
+      connectionUrls,
+      shareConnection: true,
+    };
+    const first = new AmqpCacoon(sharedConfig);
+    const second = new AmqpCacoon(sharedConfig);
+
+    await first.getPublishChannel();
+    await second.getPublishChannel();
+
+    expect((amqp.connect as any).callCount).to.equal(1);
+    expect((first as any).connection).to.equal(sharedConnection);
+    expect((second as any).connection).to.equal(sharedConnection);
   });
 
   it("only closes a shared connection when the last sharer closes", async () => {

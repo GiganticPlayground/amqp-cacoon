@@ -48,7 +48,7 @@ const config = {
     // Protocol should be "amqp" or "amqps"
     protocol: 'amqp',
     // Username + Password on the RabbitMQ host
-    username: 'valtech',
+    username: 'guest',
     password: 'iscool',
     // Host
     host: 'localhost',
@@ -67,6 +67,12 @@ let amqpCacoon = new AmqpCacoon({
   password: config.messageBus.password,
   host: config.messageBus.host,
   port: config.messageBus.port,
+  // Optional: provide multiple broker URLs for reconnect/failover.
+  // When set, these URLs are passed directly to node-amqp-connection-manager.
+  // connectionUrls: [
+  //   'amqp://guest:guest@rabbit-1:5672',
+  //   'amqp://guest:guest@rabbit-2:5672',
+  // ],
   // AMQP Options which should conform to <AmqpConnectionManagerOptions>
   amqp_opts: {
     // Pass options to node amqp connection manager (a wrapper around AMQPLIB)
@@ -346,5 +352,5 @@ The e2e suite currently verifies graceful shutdown, backlog preservation during 
 - TODO: Add an example of ConsumeBatch where individual messages are ACK/NACK.
 - PENDING: Timeout if drain event does not occur after some amount of time when channel is not ready to receive a 
   publish. As of 09/2020, the publish-on-drain functionality has been removed, as `node-amqp-manager` does not support 
-  it at this time (pending a bugfix?). This requires further research and testing. See https://github.com/valtech-sd/amqp-cacoon/issues/20.
+  it at this time (pending a bugfix?). This requires further research and testing. See issue #20 in the project tracker.
   

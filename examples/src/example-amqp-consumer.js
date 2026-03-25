@@ -17,8 +17,7 @@
  * - Copy the file ./examples/src/conf/secrets-template.json to secrets.json.
  * - Edit the username, password and CA certificate values in that file to match your broker settings.
  *
- * If you don't have a RabbitMQ broker setup, check out our other repo that provides you a way to stand up
- * a broker using Docker Compose. See https://github.com/valtech-sd/Docker-RabbitMQ.
+ * If you don't have a RabbitMQ broker setup, you can also stand one up locally with Docker Compose.
  *
  */
 
