@@ -64,6 +64,7 @@ export interface IAmqpCacoonConfig {
   port?: number;
   vhost?: string;
   connectionString?: string;
+  connectionUrls?: string[];
   amqp_opts: object;
   providers: {
     logger?: ILogger;
@@ -97,6 +98,7 @@ class AmqpCacoon {
   private subChannelWrapper: ChannelWrapper | null;
   private connection?: AmqpConnectionManager;
   private fullHostName: string;
+  private connectionUrls: string[];
   private amqp_opts: object;
   private shareConnection: boolean;
   private sharedConnectionKey: string | null;
@@ -136,9 +138,17 @@ class AmqpCacoon {
     this.subChannelWrapper = null;
     this.fullHostName =
       config.connectionString || AmqpCacoon.getFullHostName(config);
+    this.connectionUrls =
+      config.connectionUrls && config.connectionUrls.length > 0
+        ? config.connectionUrls
+        : [this.fullHostName];
     this.amqp_opts = config.amqp_opts;
     this.shareConnection = config.shareConnection || false;
-    this.sharedConnectionKey = this.shareConnection ? this.fullHostName : null;
+    this.sharedConnectionKey = this.shareConnection
+      ? config.connectionUrls && config.connectionUrls.length > 0
+        ? JSON.stringify(this.connectionUrls)
+        : this.fullHostName
+      : null;
     this.logger = config.providers.logger;
     // this.maxWaitForDrainMs = config.maxWaitForDrainMs || 60000; // Default to 1 min
     this.onChannelConnect = config.onChannelConnect || null;
@@ -223,7 +233,7 @@ class AmqpCacoon {
       }
     }
 
-    const connection = amqp.connect([this.fullHostName], this.amqp_opts);
+    const connection = amqp.connect(this.connectionUrls, this.amqp_opts);
     this.connection = connection;
 
     if (this.shareConnection && this.sharedConnectionKey) {
@@ -511,7 +521,7 @@ class AmqpCacoon {
       this.messageStatistics.messagesPublished++;
       // There's currently a reported bug in node-amqp-connection-manager saying the lib does
       // not handle drain events properly... requires research.
-      // See https://github.com/valtech-sd/amqp-cacoon/issues/20
+      // See issue #20 in the project tracker
       await channel.publish(exchange, routingKey, msgBuffer, options);
       return;
     } catch (e) {

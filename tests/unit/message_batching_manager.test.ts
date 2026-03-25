@@ -25,7 +25,7 @@ const config: any = {
     // Protocol should be "amqp" or "amqps"
     protocol: 'amqp',
     // Username + Password on the RabbitMQ host
-    username: 'valtech',
+    username: 'guest',
     password: 'iscool',
     // Host
     host: 'localhost',

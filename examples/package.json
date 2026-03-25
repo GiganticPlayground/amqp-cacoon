@@ -15,6 +15,6 @@
     "amqp-cacoon": "file:.."
   },
   "devDependencies": {},
-  "author": "Valtech: San Diego Engineering Team",
+  "author": "",
   "license": "MIT"
 }
