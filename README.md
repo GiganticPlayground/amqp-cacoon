@@ -42,6 +42,20 @@ be untested.
 
 This allows you to connect to an amqp server
 
+You can configure the connection in one of three ways:
+
+1. Provide discrete connection fields: `protocol`, `username`, `password`, `host`, `port`, and optional `vhost`.
+1. Provide a single `connectionString`.
+1. Provide `connectionUrls` to connect to RabbitMQ cluster node URLs in a round-robin fashion.
+
+If multiple styles are provided, precedence is:
+
+1. `connectionUrls`
+1. `connectionString`
+1. Discrete connection fields
+
+#### Option 1: Discrete Connection Fields
+
 ```javascript
 const config = {
   messageBus: {
@@ -67,12 +81,6 @@ let amqpCacoon = new AmqpCacoon({
   password: config.messageBus.password,
   host: config.messageBus.host,
   port: config.messageBus.port,
-  // Optional: provide multiple broker URLs for reconnect/failover.
-  // When set, these URLs are passed directly to node-amqp-connection-manager.
-  // connectionUrls: [
-  //   'amqp://guest:guest@rabbit-1:5672',
-  //   'amqp://guest:guest@rabbit-2:5672',
-  // ],
   // AMQP Options which should conform to <AmqpConnectionManagerOptions>
   amqp_opts: {
     // Pass options to node amqp connection manager (a wrapper around AMQPLIB)
@@ -103,6 +111,63 @@ let amqpCacoon = new AmqpCacoon({
   },
 });
 ```
+
+#### Option 2: `connectionString`
+
+Use `connectionString` when you already have a complete single-broker AMQP URL.
+
+```javascript
+let amqpCacoon = new AmqpCacoon({
+  connectionString: 'amqp://guest:guest@localhost:5672/my-vhost',
+  amqp_opts: {
+    heartbeatIntervalInSeconds: 5,
+    reconnectTimeInSeconds: 5,
+  },
+  providers: {
+    logger: logger,
+  },
+});
+```
+
+#### Option 3: `connectionUrls`
+
+Use `connectionUrls` when you want to supply multiple RabbitMQ cluster node URLs.
+These URLs are passed to the underlying `amqp-connection-manager`, which will
+attempt connections across them in a round-robin fashion.
+
+```javascript
+let amqpCacoon = new AmqpCacoon({
+  connectionUrls: [
+    'amqp://guest:guest@rabbit-1:5672/my-vhost',
+    'amqp://guest:guest@rabbit-2:5672/my-vhost',
+    'amqp://guest:guest@rabbit-3:5672/my-vhost',
+  ],
+  amqp_opts: {
+    heartbeatIntervalInSeconds: 5,
+    reconnectTimeInSeconds: 5,
+  },
+  providers: {
+    logger: logger,
+  },
+});
+```
+
+Notes:
+
+1. Each entry in `connectionUrls` must be a complete AMQP connection URL such as
+   `amqp://user:password@host:5672` or `amqps://user:password@host:5671/vhost`.
+1. When `connectionUrls` is provided and not empty, it takes precedence over the
+   individual `protocol`, `username`, `password`, `host`, `port`, `vhost`, and
+   `connectionString` fields.
+1. When `connectionUrls` is omitted and `connectionString` is set, the library
+   uses `connectionString` as the single broker URL.
+1. When both `connectionUrls` and `connectionString` are omitted, the library
+   builds a single connection URL from the individual host fields.
+1. The URLs are passed directly to `node-amqp-connection-manager`, so connection,
+   reconnect, and round-robin broker selection behavior follows that library's
+   connection handling.
+1. This is intended for supplying multiple cluster node URLs. It does not add
+   any custom load-balancing or cluster-routing logic inside `amqp-cacoon`.
 
 > **Note:** See the [RabbitMQ Setup](#rabbitmq-setup) section below for how to set up Exchanges and Queues once your
 > connection is established.
