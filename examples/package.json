@@ -10,11 +10,10 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "lodash": "^4.17.15",
-    "log4js": "^6.3.0",
-    "amqp-cacoon": "file:.."
+    "amqp-cacoon": "file:..",
+    "lodash": "^4.18.1",
+    "logra": "github:GiganticPlayground/logra#v1.0.0"
   },
-  "devDependencies": {},
   "author": "",
   "license": "MIT"
 }
