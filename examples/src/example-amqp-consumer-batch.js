@@ -7,8 +7,8 @@
  *
  * DEPENDENCIES:*
  * - AMQP Cacoon - is a package that manages connections to RabbitMQ.
- * - log4js - is a generic logger for NodeJS. See the file ./providers/custom_logger.js for a very
- *   example of log4js as a replacement to console.log.
+ * - logra - is a lightweight logger for NodeJS. See the file ./custom_logger.js for an
+ *   example of logra as a replacement to console.log.
  *
  * IMPORTANT * IMPORTANT * IMPORTANT: BROKER AUTHENTICATION AND TLS
  *
